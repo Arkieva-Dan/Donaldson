@@ -1,0 +1,419 @@
+USE [msdb]
+GO
+
+/****** Object:  Job [Donaldson_Planning_Daily_Update_Partial]    Script Date: 9/25/2026 10:12:10 AM ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [[Uncategorized (Local)]]    Script Date: 9/25/2026 10:12:10 AM ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'[Uncategorized (Local)]' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'[Uncategorized (Local)]'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'Donaldson_Planning_Daily_Update_Partial', 
+		@enabled=1, 
+		@notify_level_eventlog=0, 
+		@notify_level_email=0, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'Nightly Batch Job. Gets triggered by job ''Arkieva_DI_Import_Files''', 
+		@category_name=N'[Uncategorized (Local)]', 
+		@owner_login_name=N'sa', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [START]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'START', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[PrsLogMessage] ''Donaldson_Planning_Daily_Update_Partial -- Batch Started'',''Arkieva Software'',-100;
+;
+DECLARE 
+ @body		varchar(MAX)
+,@subj		varchar(MAX)
+,@error_msg	varchar(MAX)
+,@JobName	nvarchar(250) = ''Donaldson_Planning_Daily_Update_Partial''
+
+set @subj = ''[DONALDSON] [PROD] Job (PARTIAL) Start Notification Mail''
+
+set @body = @JobName + '' Started on ''+@@servername
+;
+EXEC [dbo].[zpr_Send_EMail_HTML]
+ @call_name	= ''Batch''
+,@bdy		= @body
+,@sub		= @subj
+,@profile_cd	= ''DonaldsonPrdSQL''', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Load Data from DataMart]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Load Data from DataMart', 
+		@step_id=2, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_LoadData];
+
+
+--Archive Usage and Inventory snapshot data
+EXEC dbo.zpr_Batch_Populate_Archives;', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Notify users and wait before lockout]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Notify users and wait before lockout', 
+		@step_id=3, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=3, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'--Warning message before batch job run
+DECLARE @MessageThe nvarchar(max) 
+SET     @MessageThe = ''It is now ''+   Cast(GETUTCDATE() as nvarchar) +  '' UTC Time. Arkieva will lock out all users and run a batch job in 5 minutes. Please save your work and close Arkieva to avoid losing unsaved changes.''
+EXEC [dbo].[PostSystemNotification] @message = @MessageThe  
+;
+
+--Wait before continue
+WAITFOR DELAY ''00:05:00''
+;', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Lock Out Users]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Lock Out Users', 
+		@step_id=4, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'--EXEC [dbo].[zpr_PostSystemLockoutNotification]
+EXEC [dbo].[zpr_PostSystemLockoutNotification_Partial] -- Sunil 2026-06-08', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Monthly Roll Forward]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Monthly Roll Forward', 
+		@step_id=5, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=1, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_Roll_Forward]', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Update Overrides]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Update Overrides', 
+		@step_id=6, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=1, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_UpdateActiveOverrides] ''Planning''', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Cascade Forecast]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Cascade Forecast', 
+		@step_id=7, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=2, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_Cascade_Demand_Planner_Forecast];
+', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Refresh Dashboard Data Source]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Refresh Dashboard Data Source', 
+		@step_id=8, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=1, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_AD_BuildDynamicDatasets]', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Update Service levels]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Update Service levels', 
+		@step_id=9, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=1, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_Update_Service_Levels]', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Extract & Update SS Calc Results]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Extract & Update SS Calc Results', 
+		@step_id=10, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=2, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'
+
+EXEC [dbo].[zpr_Batch_Extract_SS_Results];
+
+EXEC [dbo].[zpr_Batch_Update_SS_Results_InStar];
+', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Reapply SS & TS Overrides]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Reapply SS & TS Overrides', 
+		@step_id=11, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=1, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'
+ Declare @StarItemID uniqueidentifier
+
+ Set @StarItemID = ( Select ItemID from dbo.star where [name] = ''Inventory_Planning'')
+ 
+ EXEC dbo.ProcessOverridesForStar @ItemID= @StarItemID;', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Refresh Daily and ME Inventory Reports]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Refresh Daily and ME Inventory Reports', 
+		@step_id=12, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=1, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_Daily_Inventory_Snapshot];
+
+Exec dbo.zpr_Batch_Archive_ME_Inventory_Snapshot;
+
+EXEC [dbo].[zpr_IP_DASH_ME_Inventory_Snapshot];
+', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Remove User Lock Out]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Remove User Lock Out', 
+		@step_id=13, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_PostSystemRestoreNotification] ''Donaldson_Planning_Daily_Update_Partial''
+;
+DECLARE 
+ @body		varchar(MAX)
+,@subj		varchar(MAX)
+,@error_msg	varchar(MAX)
+,@JobName	nvarchar(250) = ''Donaldson_Planning_Daily_Update_Partial''
+
+set @subj = ''[DONALDSON] [PROD] (PARTIAL) The Application is now unlocked''
+
+set @body = ''You are now able to access Arkieva.''
+;
+EXEC [dbo].[zpr_Send_EMail_HTML]
+ @call_name	= ''Batch''
+,@bdy		= @body
+,@sub		= @subj
+,@profile_cd	= ''DonaldsonPrdSQL''
+
+EXEC [dbo].[zpr_Send_EMail_HTML]
+ @call_name      = ''Client_Email''
+,@bdy            = @body
+,@sub            = @subj
+,@profile_cd     = ''DonaldsonPrdSQL''', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Rebuild System Table Indexes 2]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Rebuild System Table Indexes 2', 
+		@step_id=14, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'
+Exec dbo.RebuildSystemTableIndexes;', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Refresh Customer Forecast Filter]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Refresh Customer Forecast Filter', 
+		@step_id=15, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=4, 
+		@on_fail_step_id=17, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[zpr_Batch_Customer_Forecast_Filter_Refresh]', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [SUCCESS]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'SUCCESS', 
+		@step_id=16, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[PrsLogMessage] ''Donaldson_Planning_Daily_Update_Partial -- Batch Succeeded'',''Arkieva Software'',-100;
+;
+DECLARE 
+ @body		varchar(MAX)
+,@subj		varchar(MAX)
+,@error_msg	varchar(MAX)
+,@JobName	nvarchar(250) = ''Donaldson_Planning_Daily_Update_Partial''
+
+set @subj = ''[DONALDSON] [PROD] Job (PARTIAL) Success Notification Mail''
+
+set @body = @JobName + '' Succeeded on ''+@@servername
+;
+EXEC [dbo].[zpr_Send_EMail_HTML]
+ @call_name	= ''Batch''
+,@bdy		= @body
+,@sub		= @subj
+,@profile_cd	= ''DonaldsonPrdSQL''
+
+/*
+EXEC [dbo].[zpr_Send_EMail_HTML]
+ @call_name      = ''Client_Email''
+,@bdy            = @body
+,@sub            = @subj
+,@profile_cd     = ''DonaldsonPrdSQL''
+*/
+
+-- DS 2024-05-07   TEST 
+
+EXEC Arkieva_Planning.[dbo].[pr_monitor_BatchjobStepTimes]
+ @Hdr = ''Batch job step times -- most recent execution''
+,@Recipients = ''Donaldson_support@arkieva.com''
+,@Subject	 = ''Batch job step times from ''
+
+-- KVDL 2024-05-07   TEST 
+--EXEC [dbo].[zpr_Batch_Run_Job] ''Export Job Status''', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [FAILURE]    Script Date: 9/25/2026 10:12:10 AM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'FAILURE', 
+		@step_id=17, 
+		@cmdexec_success_code=0, 
+		@on_success_action=2, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'EXEC [dbo].[PrsLogMessage] ''Donaldson_Planning_Daily_Update_Partial -- Batch Failed'',''Arkieva Software'',-100;
+;
+DECLARE 
+ @body		varchar(MAX)
+,@subj		varchar(MAX)
+,@error_msg	varchar(MAX)
+,@JobName	nvarchar(250) = ''Donaldson_Planning_Daily_Update_Partial''
+
+set @subj = ''FAILURE: '' + ''[DONALDSON] [PROD] Job (PARTIAL) Failure Notification Mail''
+
+set @body = @JobName + '' failed on ''+@@servername +''.Below are details, if found.
+The application will remain locked until a PostSystemRestoreNotification is executed.''
+;
+EXEC zpr_CaptureError @JobName, @captured_error = @error_msg OUT
+SET @body = @body + @error_msg
+;
+EXEC [dbo].[zpr_Send_EMail_HTML]
+ @call_name	= ''Batch''
+,@bdy		= @body
+,@sub		= @subj
+,@profile_cd	= ''DonaldsonPrdSQL''
+
+
+', 
+		@database_name=N'Arkieva_Planning', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+
